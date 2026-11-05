@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+*.ilk
+
+# 本地构建产物
+/dist
+/自检报告.txt
+/analysis_out
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
