@@ -1,0 +1,3 @@
+# 静态链接 MSVC 运行库，避免目标机器缺 VCRUNTIME140.dll
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
