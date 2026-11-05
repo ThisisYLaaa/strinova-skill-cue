@@ -769,20 +769,33 @@ fn find_yellow_clusters(f: &Frame) -> Vec<(u32, u32, u32, u32)> {
         if x1 <= x0 {
             continue;
         }
+        // 只保留"被吃满"的列，把旁边的黄字（如大招的 3/7）排除掉
+        let mut hmax = 0u32;
+        for x in x0..=x1 {
+            hmax = hmax.max(col_counts[x]);
+        }
+        let need = ((hmax as f32) * 0.5).max(2.0) as u32;
+        let mut first: Option<usize> = None;
+        let mut last = 0usize;
         let mut top = u32::MAX;
         let mut bot = 0u32;
         let mut px = 0u32;
         for x in x0..=x1 {
-            px += col_counts[x];
-            if col_counts[x] > 0 {
+            if col_counts[x] >= need {
+                if first.is_none() {
+                    first = Some(x);
+                }
+                last = x;
+                px += col_counts[x];
                 top = top.min(col_top[x]);
                 bot = bot.max(col_bot[x]);
             }
         }
-        if px < 40 || top == u32::MAX {
+        let Some(f) = first else { continue };
+        if px < 40 || top == u32::MAX || last <= f {
             continue;
         }
-        out.push((x0 as u32, top, (x1 - x0 + 1) as u32, bot - top + 1));
+        out.push((f as u32, top, (last - f + 1) as u32, bot - top + 1));
     }
     out.sort_by_key(|c| c.0);
     out
