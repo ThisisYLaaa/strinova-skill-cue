@@ -31,7 +31,10 @@ pub struct LogEvent {
 #[derive(Clone, Debug, Default)]
 pub struct ActionState {
     pub fill: f32,
+    pub fill2: f32,
     pub ready: bool,
+    /// 是否由备用区域判定为就绪
+    pub alt: bool,
     pub fired: u32,
     pub last_at: String,
     pub latency_ms: f32,
@@ -315,7 +318,8 @@ impl Worker {
         }
 
         let screen = self.screen();
-        let mut stats = None;
+        let mut stats: Option<vision::BarStats> = None;
+        let mut stats2: Option<vision::BarStats> = None;
         let mut cap_failed = false;
         if action.check_bar {
             let (x, y, w, h) = action.rect.to_px(screen.0, screen.1);
@@ -323,19 +327,32 @@ impl Worker {
                 Some(f) => stats = Some(vision::analyze_bar(&f)),
                 None => cap_failed = true,
             }
+            if let Some(r2) = action.rect2 {
+                let (x, y, w, h) = r2.to_px(screen.0, screen.1);
+                if let Some(f) = self.cap.as_mut().and_then(|c| c.grab(x, y, w, h)) {
+                    stats2 = Some(vision::analyze_bar(&f));
+                }
+            }
         }
 
-        let ready = match stats {
-            Some(st) => st.ready(action.min_fill),
-            None => cfg.play_fallback || !action.check_bar,
+        // 主区域（条）达标，或备用区域（一整片图形）达标，都算「放出来了」
+        let (ready, alt_used) = match stats {
+            Some(st) => {
+                let primary = st.ready_bar(action.min_fill);
+                let secondary = stats2.map(|s| s.ready_area(action.min_fill2)).unwrap_or(false);
+                (primary || secondary, secondary && !primary)
+            }
+            None => (cfg.play_fallback || !action.check_bar, false),
         };
 
-        // 更新动作状态
-        let fill = stats.map(|s| s.fill).unwrap_or(1.0);
+        let fill = stats.map(|s| s.extent).unwrap_or(1.0);
+        let fill2 = stats2.map(|s| s.fill).unwrap_or(0.0);
         if let Ok(mut s) = self.state.lock() {
             let e = s.actions.entry(action.id.clone()).or_default();
             e.fill = fill;
+            e.fill2 = fill2;
             e.ready = ready;
+            e.alt = alt_used;
             e.have_sample = stats.is_some();
         }
 
@@ -385,9 +402,10 @@ impl Worker {
             .unwrap_or_else(|| "全局".into());
         let msg = if played {
             format!(
-                "{} [{}] 触发 · {} · {}",
+                "{} [{}] 触发{} · {} · {}",
                 action.label,
                 action.key,
+                if alt_used { "（备用区）" } else { "" },
                 who,
                 path.as_deref()
                     .map(|p| short_path(p))
@@ -575,23 +593,36 @@ impl Worker {
     fn refresh_previews(&mut self) {
         let cfg = { self.cfg.lock().unwrap().clone() };
         let screen = self.screen();
-        let mut items: Vec<(String, (i32, i32, u32, u32))> = cfg
-            .actions
-            .iter()
-            .map(|a| (a.id.clone(), a.rect.to_px(screen.0, screen.1)))
-            .collect();
+        let mut items: Vec<(String, (i32, i32, u32, u32))> = Vec::new();
+        for a in cfg.actions.iter() {
+            items.push((a.id.clone(), a.rect.to_px(screen.0, screen.1)));
+            if let Some(r2) = a.rect2 {
+                items.push((format!("{}-alt", a.id), r2.to_px(screen.0, screen.1)));
+            }
+        }
         items.push(("avatar".into(), cfg.avatar_rect.to_px(screen.0, screen.1)));
         for (id, (x, y, w, h)) in items {
             if let Some(f) = self.cap.as_mut().and_then(|c| c.grab(x, y, w, h)) {
                 if id != "avatar" {
                     let st = vision::analyze_bar(&f);
+                    let base = id.trim_end_matches("-alt").to_string();
+                    let is_alt = id.ends_with("-alt");
                     if let Ok(mut s) = self.state.lock() {
-                        let a = s.actions.entry(id.clone()).or_default();
-                        a.fill = st.fill;
-                        a.ready = st.ready(
-                            cfg.action(&id).map(|a| a.min_fill).unwrap_or(0.5),
-                        );
-                        a.have_sample = true;
+                        let a = s.actions.entry(base.clone()).or_default();
+                        let acfg = cfg.action(&base);
+                        if is_alt {
+                            a.fill2 = st.fill;
+                        } else {
+                            a.fill = st.extent;
+                            a.have_sample = true;
+                        }
+                        let primary = a.fill >= acfg.map(|c| c.min_fill).unwrap_or(0.9);
+                        let secondary = acfg
+                            .and_then(|c| c.rect2.map(|_| c.min_fill2))
+                            .map(|t| a.fill2 >= t)
+                            .unwrap_or(false);
+                        a.ready = primary || secondary;
+                        a.alt = secondary && !primary;
                     }
                 }
                 self.publish_preview(&id, &f);

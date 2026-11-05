@@ -12,7 +12,7 @@ pub const APP_NAME_EN: &str = "Strinova Skill Cue";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHOR: &str = "Leaked-翼龙";
 pub const AUTHOR_URL: &str = "https://space.bilibili.com/616045770";
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 4;
 
 /// 归一化矩形：x/y/w/h 都是 0..1
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,6 +85,9 @@ pub struct ActionCfg {
     pub rect: RectF,
     /// 黄色占比达到多少算「已就绪」
     pub min_fill: f32,
+    /// 备用判定区域（可选）：不同角色的就绪表现不一样时用它兜底，满足任一即算就绪
+    pub rect2: Option<RectF>,
+    pub min_fill2: f32,
     /// 全局音效（未给当前角色单独配置时使用）
     pub sound: Option<String>,
     /// 是否做黄条检查（关掉＝按键即响，用于调试）
@@ -100,6 +103,8 @@ impl Default for ActionCfg {
             key: "Q".into(),
             rect: RectF::new(0.0, 0.0, 0.01, 0.01),
             min_fill: 0.5,
+            rect2: None,
+            min_fill2: 0.06,
             sound: None,
             check_bar: true,
             enabled: true,
@@ -197,7 +202,9 @@ pub fn default_actions() -> Vec<ActionCfg> {
             key: "Q".into(),
             // (994,1401)-(1089,1410)
             rect: RectF::new(0.3882813, 0.9729167, 0.0371094, 0.0062500),
-            min_fill: 0.80,
+            min_fill: 0.90,
+            rect2: None,
+            min_fill2: 0.06,
             sound: None,
             check_bar: true,
             enabled: true,
@@ -206,9 +213,12 @@ pub fn default_actions() -> Vec<ActionCfg> {
             id: "ultimate".into(),
             label: "大招".into(),
             key: "X".into(),
-            // (1224,1374)-(1340,1396) 大招充能三角行
-            rect: RectF::new(0.4781250, 0.9541667, 0.0453125, 0.0152778),
-            min_fill: 0.06,
+            // 充能条：(1219,1399)-(1337,1412)，3/7 时约 50/118 宽
+            rect: RectF::new(0.4761719, 0.9715278, 0.0460938, 0.0090278),
+            min_fill: 0.90,
+            // 备用：有些角色就绪时改为显示一整排亮黄三角 (1224,1374)-(1340,1396)
+            rect2: Some(RectF::new(0.4781250, 0.9541667, 0.0453125, 0.0152778)),
+            min_fill2: 0.06,
             sound: None,
             check_bar: true,
             enabled: true,
@@ -217,9 +227,11 @@ pub fn default_actions() -> Vec<ActionCfg> {
             id: "tactical".into(),
             label: "战术技能".into(),
             key: "C".into(),
-            // (1462,1394)-(1606,1410)
-            rect: RectF::new(0.5710938, 0.9680556, 0.0562500, 0.0111111),
-            min_fill: 0.18,
+            // (1466,1399)-(1566,1411) 三段式战术技能条
+            rect: RectF::new(0.5726563, 0.9715278, 0.0394531, 0.0090278),
+            min_fill: 0.90,
+            rect2: None,
+            min_fill2: 0.06,
             sound: None,
             check_bar: true,
             enabled: true,
@@ -344,6 +356,14 @@ impl Config {
 
     /// 修正非法值 / 补齐缺失字段
     pub fn normalize(&mut self) {
+        self.avatar_rect.clamp();
+        if self.actions.is_empty() {
+            self.actions = default_actions();
+        }
+        // 老配置迁移
+        if self.version < CONFIG_VERSION {
+            self.migrate(self.version);
+        }
         self.version = CONFIG_VERSION;
         self.volume = self.volume.clamp(0.0, 1.5);
         self.avatar_threshold = self.avatar_threshold.clamp(0.1, 0.99);
@@ -369,10 +389,62 @@ impl Config {
             a.key = a.key.trim().to_uppercase();
             a.rect.clamp();
             a.min_fill = a.min_fill.clamp(0.01, 0.99);
+            if let Some(r2) = a.rect2.as_mut() {
+                r2.clamp();
+            }
+            a.min_fill2 = a.min_fill2.clamp(0.005, 0.95);
         }
         self.characters.sort_by(|a, b| a.name.cmp(&b.name));
         self.characters.dedup_by(|a, b| a.id == b.id);
     }
+
+    /// 老版本配置修正
+    fn migrate(&mut self, from: u32) {
+        let old_x = RectF::new(0.4781250, 0.9541667, 0.0453125, 0.0152778);
+        let new_x = RectF::new(0.4761719, 0.9715278, 0.0460938, 0.0090278);
+        if from < 2 {
+            // v1 把大招区域量在了菱形上（偏高 26px），挪到真正的充能条上
+            for a in &mut self.actions {
+                if a.id == "ultimate" && rect_close(&a.rect, &old_x) {
+                    a.rect = new_x;
+                    if a.rect2.is_none() {
+                        a.rect2 = Some(old_x);
+                        a.min_fill2 = 0.06;
+                    }
+                }
+            }
+        }
+        if from < 3 {
+            // v3 起改用「跨度占比」判充满，阈值统一到 90%
+            for a in &mut self.actions {
+                let old = a.min_fill;
+                if [0.06f32, 0.18, 0.30, 0.70, 0.80]
+                    .iter()
+                    .any(|v| (old - v).abs() < 0.001)
+                {
+                    a.min_fill = 0.90;
+                }
+            }
+        }
+        if from < 4 {
+            // v4：战术技能轨道实测是 101px（原来写成 144，右半截是空的）
+            let old_c = RectF::new(0.5710938, 0.9680556, 0.0562500, 0.0111111);
+            let new_c = RectF::new(0.5726563, 0.9715278, 0.0394531, 0.0090278);
+            for a in &mut self.actions {
+                if a.id == "tactical" && rect_close(&a.rect, &old_c) {
+                    a.rect = new_c;
+                }
+            }
+        }
+    }
+}
+
+/// 两个归一化矩形是否几乎相同（用于老配置迁移）
+fn rect_close(a: &RectF, b: &RectF) -> bool {
+    (a.x - b.x).abs() < 0.002
+        && (a.y - b.y).abs() < 0.002
+        && (a.w - b.w).abs() < 0.002
+        && (a.h - b.h).abs() < 0.002
 }
 
 /// 从内置 assets/characters.json 读角色名册（只有名字和官方立绘链接，不含图片）
@@ -464,8 +536,7 @@ pub fn install_demo_sounds(cfg: &mut Config) -> bool {
     changed
 }
 
-pub fn is_sound_file(p: &Path) -> bool {
-    matches!(
+pub fn is_sound_file(p: &Path) -> bool {    matches!(
         p.extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())

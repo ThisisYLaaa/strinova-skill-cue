@@ -1,6 +1,6 @@
 [package]
 name = "strinova-skill-cue"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Strinova Skill Cue - 卡拉彼丘技能音效提示器"
 authors = ["Leaked-翼龙 <https://space.bilibili.com/616045770>"]

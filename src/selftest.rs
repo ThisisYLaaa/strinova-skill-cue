@@ -103,19 +103,37 @@ pub fn run(images: &[PathBuf]) -> i32 {
                     let (x, y, w, h) = a.rect.to_px(f.w, f.h);
                     let sub = crop(&f, x, y, w, h);
                     let st = vision::analyze_bar(&sub);
-                    let ready = st.ready(a.min_fill);
+                    let primary = st.ready_bar(a.min_fill);
+                    let mut alt_txt = String::new();
+                    let mut alt_ok = false;
+                    if let Some(r2) = a.rect2 {
+                        let (x2, y2, w2, h2) = r2.to_px(f.w, f.h);
+                        let sub2 = crop(&f, x2, y2, w2, h2);
+                        let st2 = vision::analyze_bar(&sub2);
+                        alt_ok = st2.ready_area(a.min_fill2);
+                        alt_txt = format!(
+                            "  备用 {:>5.1}% (阈值 {:>4.1}%)",
+                            st2.fill * 100.0,
+                            a.min_fill2 * 100.0
+                        );
+                    }
                     o(format!(
-                        "  {:<6} 区域 {:<4}x{:<3} @{},{}  黄色 {:>5.1}% (阈值 {:>4.0}%)  亮度 {:.2}  饱和 {:.2}  => {}",
+                        "  {:<6} 区域 {:<4}x{:<3} @{},{}  跨度 {:>5.1}% (阈值 {:>4.0}%)  面积 {:>5.1}%  亮度 {:.2}{}  => {}",
                         a.label,
                         w,
                         h,
                         x,
                         y,
-                        st.fill * 100.0,
+                        st.extent * 100.0,
                         a.min_fill * 100.0,
+                        st.fill * 100.0,
                         st.mean_v,
-                        st.mean_s,
-                        if ready { "就绪" } else { "未就绪" }
+                        alt_txt,
+                        if primary || alt_ok {
+                            if alt_ok && !primary { "就绪(备用区)" } else { "就绪" }
+                        } else {
+                            "未就绪"
+                        }
                     ));
                 }
                 // 头像

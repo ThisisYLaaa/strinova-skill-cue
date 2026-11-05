@@ -612,6 +612,10 @@ impl App {
                         theme::dim(ui, p, format!("黄条 {:.0}%", ast.fill * 100.0));
                         theme::dim(ui, p, "·");
                         theme::dim(ui, p, format!("阈值 {:.0}%", a.min_fill * 100.0));
+                        if a.rect2.is_some() {
+                            theme::dim(ui, p, "·");
+                            theme::dim(ui, p, format!("备用 {:.0}%", ast.fill2 * 100.0));
+                        }
                     });
                     ui.add_space(2.0);
                     let sound = self
@@ -1185,22 +1189,85 @@ impl App {
                                 }
                             });
                             ui.add_space(4.0);
-                            rect_editor(ui, p, "判定区域", &mut a.rect, sw, sh);
+                            rect_editor(ui, p, "黄条区域", &mut a.rect, sw, sh);
+                            ui.add_space(4.0);
+                            // 备用判定区域：不同角色的「就绪」表现可能不一样
+                            let mut has_alt = a.rect2.is_some();
+                            if ui
+                                .add(egui::Checkbox::new(&mut has_alt, "启用备用判定区域"))
+                                .changed()
+                            {
+                                a.rect2 = if has_alt {
+                                    a.min_fill2 = 0.06;
+                                    Some(RectF::from_px(
+                                        (a.rect.x * sw as f32) as i32,
+                                        ((a.rect.y - a.rect.h * 2.0) * sh as f32).max(0.0) as i32,
+                                        (a.rect.w * sw as f32).max(8.0) as u32,
+                                        (a.rect.h * sh as f32 * 2.0).max(8.0) as u32,
+                                        sw,
+                                        sh,
+                                    ))
+                                } else {
+                                    None
+                                };
+                                self.touch();
+                            }
+                            if a.rect2.is_some() {
+                                if let Some(r2) = a.rect2.as_mut() {
+                                    rect_editor(ui, p, "备用区域", r2, sw, sh);
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.allocate_ui(Vec2::new(80.0, 20.0), |ui| {
+                                        theme::dim(ui, p, "备用阈值");
+                                    });
+                                    let mut mf2 = a.min_fill2 * 100.0;
+                                    if ui
+                                        .add(
+                                            egui::Slider::new(&mut mf2, 0.5..=95.0)
+                                                .suffix(" %")
+                                                .fixed_decimals(1),
+                                        )
+                                        .changed()
+                                    {
+                                        a.min_fill2 = (mf2 / 100.0).clamp(0.005, 0.95);
+                                        self.touch();
+                                    }
+                                });
+                                if self.st.previews.contains_key(&format!("{}-alt", a.id)) {
+                                    ui.horizontal(|ui| {
+                                        ui.allocate_ui(Vec2::new(80.0, 20.0), |ui| {
+                                            theme::dim(ui, p, "备用画面");
+                                        });
+                                        button_texture(
+                                            ui,
+                                            p,
+                                            &self.st,
+                                            &self.textures,
+                                            &format!("{}-alt", a.id),
+                                            26.0,
+                                        );
+                                    });
+                                }
+                            }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 if self.st.previews.contains_key(&a.id) {
                                     button_texture(ui, p, &self.st, &self.textures, &a.id, 26.0);
                                 }
                                 let ast = self.st.actions.get(&a.id).cloned().unwrap_or_default();
-                                theme::dim(
-                                    ui,
-                                    p,
-                                    format!(
-                                        "当前黄色 {:.1}% {}",
-                                        ast.fill * 100.0,
-                                        if ast.ready { "（就绪）" } else { "" }
-                                    ),
+                                let mut txt = format!(
+                                    "当前黄色 {:.1}% {}",
+                                    ast.fill * 100.0,
+                                    if ast.ready && !ast.alt { "（就绪）" } else { "" }
                                 );
+                                if a.rect2.is_some() {
+                                    txt.push_str(&format!(
+                                        " · 备用 {:.1}%{}",
+                                        ast.fill2 * 100.0,
+                                        if ast.alt { "（就绪）" } else { "" }
+                                    ));
+                                }
+                                theme::dim(ui, p, txt);
                             });
                         });
                 });

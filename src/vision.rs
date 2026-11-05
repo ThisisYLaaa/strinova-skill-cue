@@ -7,8 +7,10 @@ use crate::capture::Frame;
 /// 单帧黄条统计
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BarStats {
-    /// 判定区域内「黄色」像素占比 0..1
+    /// 判定区域内「黄色」像素占比 0..1（适合判断"一整片图形"，如大招三角行）
     pub fill: f32,
+    /// 从左到右被黄色覆盖的跨度占比 0..1（适合判断"条充满没有"）
+    pub extent: f32,
     /// 平均亮度 0..1
     pub mean_v: f32,
     /// 平均饱和度 0..1
@@ -17,7 +19,12 @@ pub struct BarStats {
 }
 
 impl BarStats {
-    pub fn ready(&self, min_fill: f32) -> bool {
+    /// 条状判定：跨度占比达标（充能条/冷却条用这个）
+    pub fn ready_bar(&self, min_fill: f32) -> bool {
+        self.pixels > 0 && self.extent >= min_fill
+    }
+    /// 面状判定：面积占比达标（就绪时改画"一排亮三角"的角色用这个）
+    pub fn ready_area(&self, min_fill: f32) -> bool {
         self.pixels > 0 && self.fill >= min_fill
     }
 }
@@ -57,23 +64,38 @@ fn is_bar_yellow(h: f32, s: f32, v: f32) -> bool {
 
 /// 统计一块截图里的黄色占比
 pub fn analyze_bar(frame: &Frame) -> BarStats {
-    let n = (frame.w * frame.h) as usize;
+    let w = frame.w as usize;
+    let h = frame.h as usize;
+    let n = w * h;
     if n == 0 {
         return BarStats::default();
     }
     let mut yellow = 0u32;
     let mut sum_v = 0.0f32;
     let mut sum_s = 0.0f32;
-    for px in frame.rgba.chunks_exact(4) {
-        let (h, s, v) = rgb_to_hsv(px[0], px[1], px[2]);
-        if is_bar_yellow(h, s, v) {
+    let mut col_on = vec![0u32; w];
+    for (i, px) in frame.rgba.chunks_exact(4).enumerate() {
+        let (hh, s, v) = rgb_to_hsv(px[0], px[1], px[2]);
+        if is_bar_yellow(hh, s, v) {
             yellow += 1;
+            col_on[i % w] += 1;
         }
         sum_v += v;
         sum_s += s;
     }
+    // 跨度：一列里黄色覆盖超过一半才算"这一列被填上"，避免把旁边的黄字算进来
+    let need = ((h as f32) * 0.5).ceil() as u32;
+    let first = col_on.iter().position(|&c| c >= need);
+    let extent = match first {
+        Some(f0) => {
+            let last = col_on.iter().rposition(|&c| c >= need).unwrap_or(f0);
+            (last - f0 + 1) as f32 / w as f32
+        }
+        None => 0.0,
+    };
     BarStats {
         fill: yellow as f32 / n as f32,
+        extent,
         mean_v: sum_v / n as f32,
         mean_s: sum_s / n as f32,
         pixels: n as u32,
@@ -193,7 +215,50 @@ mod tests {
         let f = frame_from(100, 10, [245, 197, 66]);
         let s = analyze_bar(&f);
         assert!(s.fill > 0.99, "fill={}", s.fill);
-        assert!(s.ready(0.8));
+        assert!(s.extent > 0.99, "extent={}", s.extent);
+        assert!(s.ready_bar(0.9));
+    }
+
+    #[test]
+    fn half_bar_is_not_full() {
+        // 左边一半黄
+        let (w, h) = (100u32, 10u32);
+        let mut rgba = Vec::new();
+        for _y in 0..h {
+            for x in 0..w {
+                if x < 50 {
+                    rgba.extend_from_slice(&[245, 197, 66, 255]);
+                } else {
+                    rgba.extend_from_slice(&[110, 125, 145, 255]);
+                }
+            }
+        }
+        let f = Frame { w, h, rgba };
+        let s = analyze_bar(&f);
+        assert!((s.extent - 0.5).abs() < 0.05, "extent={}", s.extent);
+        assert!(!s.ready_bar(0.9));
+    }
+
+    #[test]
+    fn sparse_yellow_text_does_not_fake_full_bar() {
+        // 一根短条 + 右侧零散黄字：跨度不能把黄字算进去
+        let (w, h) = (120u32, 12u32);
+        let mut rgba = Vec::new();
+        for _y in 0..h {
+            for x in 0..w {
+                let is_bar = x < 50;
+                let is_text = (90..100).contains(&x) && (_y == 1 || _y == 2);
+                if is_bar || is_text {
+                    rgba.extend_from_slice(&[245, 197, 66, 255]);
+                } else {
+                    rgba.extend_from_slice(&[40, 50, 62, 255]);
+                }
+            }
+        }
+        let f = Frame { w, h, rgba };
+        let s = analyze_bar(&f);
+        assert!(s.extent < 0.5, "extent={}", s.extent);
+        assert!(!s.ready_bar(0.9));
     }
 
     #[test]
@@ -201,7 +266,8 @@ mod tests {
         let f = frame_from(100, 10, [110, 125, 145]);
         let s = analyze_bar(&f);
         assert!(s.fill < 0.01, "fill={}", s.fill);
-        assert!(!s.ready(0.2));
+        assert!(!s.ready_bar(0.9));
+        assert!(!s.ready_area(0.2));
     }
 
     #[test]
